@@ -1,0 +1,3 @@
+#!/bin/bash
+# Omarchy theme-set hook: replace the stock background with an ASCII scene in the new theme's colors.
+"$HOME/.local/bin/asciiwall" next

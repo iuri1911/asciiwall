@@ -1,0 +1,16 @@
+// Add inside the object in ~/.config/omarchy/extensions/omarchy-menu.jsonc.
+// The shell normalizes every field of an override, so icon/label/aliases must be restated.
+"style.background": {"icon":"","label":"Background","aliases":["background","wallpaper"],"action":"\"$HOME/.local/bin/asciiwall\" pick"},
+// Separate control menu: keep the stock Style hierarchy and Omarchy image picker.
+"style.asciiwall": {"icon":"","label":"ASCII Wallpaper","when":"[[ -x $HOME/.local/bin/asciiwall ]]"},
+"style.asciiwall.scene": {"icon":"","label":"Choose Scene","action":"\"$HOME/.local/bin/asciiwall\" pick"},
+"style.asciiwall.next": {"icon":"󰒟","label":"Random Scene Now","action":"\"$HOME/.local/bin/asciiwall\" next"},
+"style.asciiwall.mode": {"icon":"󰔎","label":"Animation Mode"},
+"style.asciiwall.mode.live": {"icon":"󰔎","label":"Live","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status mode)\" == live ]]","action":"\"$HOME/.local/bin/asciiwall\" mode live"},
+"style.asciiwall.mode.static": {"icon":"","label":"Static","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status mode)\" == static ]]","action":"\"$HOME/.local/bin/asciiwall\" mode static"},
+"style.asciiwall.rotation": {"icon":"󰁨","label":"Automatic Rotation"},
+"style.asciiwall.rotation.off": {"icon":"󰅖","label":"Off","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status interval)\" == 0 ]]","action":"\"$HOME/.local/bin/asciiwall\" interval 0"},
+"style.asciiwall.rotation.15": {"icon":"󰔛","label":"Every 15 Minutes","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status interval)\" == 15 ]]","action":"\"$HOME/.local/bin/asciiwall\" interval 15"},
+"style.asciiwall.rotation.30": {"icon":"󰔛","label":"Every 30 Minutes","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status interval)\" == 30 ]]","action":"\"$HOME/.local/bin/asciiwall\" interval 30"},
+"style.asciiwall.rotation.60": {"icon":"󰔛","label":"Every 60 Minutes","checked":"[[ \"$(\"$HOME/.local/bin/asciiwall\" status interval)\" == 60 ]]","action":"\"$HOME/.local/bin/asciiwall\" interval 60"},
+"style.asciiwall.config": {"icon":"","label":"Edit Scene List and Settings","action":"omarchy-launch-config-editor \"$HOME/.config/asciiwall/config.toml\""},
