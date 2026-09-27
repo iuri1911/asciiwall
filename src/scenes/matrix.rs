@@ -28,7 +28,12 @@ impl Matrix {
             })
             .collect();
         let chars = (0..cols * rows).map(|_| glyph(rng.u8(33..=126))).collect();
-        Matrix { rng, rows, drops, chars }
+        Matrix {
+            rng,
+            rows,
+            drops,
+            chars,
+        }
     }
 }
 

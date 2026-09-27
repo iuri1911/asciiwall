@@ -7,7 +7,11 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(cols: u32, rows: u32) -> Grid {
-        Grid { cols, rows, cells: vec![[0, 0]; (cols * rows) as usize] }
+        Grid {
+            cols,
+            rows,
+            cells: vec![[0, 0]; (cols * rows) as usize],
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {

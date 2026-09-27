@@ -1,6 +1,7 @@
 // Shared by every shader scene. A scene appends either `fn field(p) -> vec3<f32>`
 // (plus shape.wgsl, which turns fields into glyphs) or its own `fn cell(c) -> u32`,
-// and may define `fn prepare(lid: u32)` for per-workgroup setup. Point scenes also
+// and may define `fn prepare(lid: u32)` for per-workgroup setup (it runs before
+// both passes, e.g. to build geometry in workgroup memory). Point scenes also
 // define `fn points(i: u32)`: a scatter pass runs it F.points times per frame, each
 // call `plot`s into a density grid of 2x3 samples per cell that `field` reads back
 // with `splat` (so a cloud of points becomes strokes through shape matching).
@@ -48,7 +49,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_
 }
 
 @compute @workgroup_size(64)
-fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
+fn scatter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+    prepare(lid);
+    workgroupBarrier();
     if (id.x < F.points) {
         points(id.x);
     }

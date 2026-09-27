@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "asciiwall.picker",
+  "name": "ASCII wallpaper picker",
+  "version": "1.0.0",
+  "author": "asciiwall",
+  "description": "Omarchy's image picker carousel for asciiwall scenes, with the selected scene animated; desktop double-click opens it",
+  "kinds": [
+    "overlay",
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "ScenePicker.qml",
+    "service": "Desktop.qml"
+  }
+}

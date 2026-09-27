@@ -17,21 +17,26 @@ use calloop::generic::Generic;
 use calloop::signals::Signals;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopSignal, PostAction};
-use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region};
+use raw_window_handle::{
+    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+};
+use smithay_client_toolkit::compositor::{
+    CompositorHandler, CompositorState, FrameCallbackData, Region,
+};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
 use std::ptr::NonNull;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::wl_output::{Transform, WlOutput};
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -40,8 +45,14 @@ use wayland_protocols::wp::viewporter::client::wp_viewport::{self, WpViewport};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 const UNIFORM_SIZE: usize = 32 + 8 * 16;
-const HYPR_EVENTS: [&[u8]; 6] =
-    [b"fullscreen>>", b"workspace>>", b"focusedmon>>", b"openwindow>>", b"closewindow>>", b"movewindow>>"];
+const HYPR_EVENTS: [&[u8]; 6] = [
+    b"fullscreen>>",
+    b"workspace>>",
+    b"focusedmon>>",
+    b"openwindow>>",
+    b"closewindow>>",
+    b"movewindow>>",
+];
 
 /// GPU resources for one configured output.
 struct Res {
@@ -53,6 +64,8 @@ struct Res {
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     atlas: Atlas,
+    /// Physical / logical pixels of the output.
+    scale: f32,
     off: (u32, u32),
     srgb: bool,
     grid: Grid,
@@ -110,6 +123,11 @@ struct LiveApp {
     seed: u64,
     palette: Palette,
     last_frame: Instant,
+    /// Scene clock multiplier. Reloaded when the scene or config file changes.
+    pace: f32,
+    pace_key: String,
+    pace_mtime: Option<SystemTime>,
+    pace_ready: bool,
     hypr_buf: Vec<u8>,
 }
 
@@ -133,10 +151,13 @@ pub fn run(mut core: Core, signals: Signals) -> Result<()> {
     let frame = Duration::from_secs_f64(1.0 / core.cfg.fps.clamp(1, 240) as f64);
     install_common(&handle, signals, interval)?;
     handle
-        .insert_source(Timer::from_duration(frame), move |deadline, _, app: &mut LiveApp| {
-            app.draw();
-            TimeoutAction::ToInstant((deadline + frame).max(Instant::now()))
-        })
+        .insert_source(
+            Timer::from_duration(frame),
+            move |deadline, _, app: &mut LiveApp| {
+                app.draw();
+                TimeoutAction::ToInstant((deadline + frame).max(Instant::now()))
+            },
+        )
         .map_err(|e| anyhow!("frame timer: {e}"))?;
     if let Err(e) = watch_hyprland(&handle) {
         eprintln!("asciiwall: fullscreen pause disabled: {e:#}");
@@ -159,6 +180,10 @@ pub fn run(mut core: Core, signals: Signals) -> Result<()> {
         seed: 0,
         palette: Palette::load(),
         last_frame: Instant::now(),
+        pace: 1.0,
+        pace_key: String::new(),
+        pace_mtime: None,
+        pace_ready: false,
         hypr_buf: Vec::new(),
     };
     rotate(&mut app, first);
@@ -177,12 +202,19 @@ fn init_render() -> Result<Render> {
         ty,
         count: None,
     };
-    let buffer = |ty| wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None };
+    let buffer = |ty| wgpu::BindingType::Buffer {
+        ty,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    };
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("asciiwall"),
         entries: &[
             entry(0, buffer(wgpu::BufferBindingType::Uniform)),
-            entry(1, buffer(wgpu::BufferBindingType::Storage { read_only: true })),
+            entry(
+                1,
+                buffer(wgpu::BufferBindingType::Storage { read_only: true }),
+            ),
             entry(
                 2,
                 wgpu::BindingType::Texture {
@@ -198,7 +230,13 @@ fn init_render() -> Result<Render> {
         bind_group_layouts: &[Some(&bgl)],
         immediate_size: 0,
     });
-    Ok(Render { cell: GpuCell::with(gpu.clone()), gpu, shader, bgl, layout })
+    Ok(Render {
+        cell: GpuCell::with(gpu.clone()),
+        gpu,
+        shader,
+        bgl,
+        layout,
+    })
 }
 
 /// Bind the uniform, the cells the scene writes to (its own buffer for shader
@@ -211,15 +249,27 @@ fn bind_group(
     atlas_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let cells = scene.gpu().map_or(cpu_cells, |s| s.cells());
-    render.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("asciiwall"),
-        layout: &render.bgl,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: cells.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(atlas_view) },
-        ],
-    })
+    render
+        .gpu
+        .device
+        .create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("asciiwall"),
+            layout: &render.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cells.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                },
+            ],
+        })
 }
 
 /// Pause outputs whose active workspace has a fullscreen window.
@@ -230,26 +280,29 @@ fn watch_hyprland(handle: &calloop::LoopHandle<'static, LiveApp>) -> Result<()> 
     let stream = UnixStream::connect(&path).with_context(|| format!("cannot connect {path}"))?;
     stream.set_nonblocking(true)?;
     handle
-        .insert_source(Generic::new(stream, Interest::READ, calloop::Mode::Level), |_, stream, app: &mut LiveApp| {
-            let mut buf = [0u8; 4096];
-            loop {
-                match (&**stream).read(&mut buf) {
-                    Ok(0) => return Ok(PostAction::Remove),
-                    Ok(n) => app.hypr_buf.extend_from_slice(&buf[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e),
+        .insert_source(
+            Generic::new(stream, Interest::READ, calloop::Mode::Level),
+            |_, stream, app: &mut LiveApp| {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match (&**stream).read(&mut buf) {
+                        Ok(0) => return Ok(PostAction::Remove),
+                        Ok(n) => app.hypr_buf.extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => return Err(e),
+                    }
                 }
-            }
-            let mut relevant = false;
-            while let Some(pos) = app.hypr_buf.iter().position(|&b| b == b'\n') {
-                relevant |= HYPR_EVENTS.iter().any(|e| app.hypr_buf.starts_with(e));
-                app.hypr_buf.drain(..=pos);
-            }
-            if relevant {
-                app.refresh_pause();
-            }
-            Ok(PostAction::Continue)
-        })
+                let mut relevant = false;
+                while let Some(pos) = app.hypr_buf.iter().position(|&b| b == b'\n') {
+                    relevant |= HYPR_EVENTS.iter().any(|e| app.hypr_buf.starts_with(e));
+                    app.hypr_buf.drain(..=pos);
+                }
+                if relevant {
+                    app.refresh_pause();
+                }
+                Ok(PostAction::Continue)
+            },
+        )
         .map_err(|e| anyhow!("hyprland socket: {e}"))?;
     Ok(())
 }
@@ -257,7 +310,10 @@ fn watch_hyprland(handle: &calloop::LoopHandle<'static, LiveApp>) -> Result<()> 
 /// Monitor name → active workspace has a fullscreen window.
 fn fullscreen_monitors() -> HashMap<String, bool> {
     let json = |what: &str| -> Option<serde_json::Value> {
-        let out = std::process::Command::new("hyprctl").args(["-j", what]).output().ok()?;
+        let out = std::process::Command::new("hyprctl")
+            .args(["-j", what])
+            .output()
+            .ok()?;
         serde_json::from_slice(&out.stdout).ok()
     };
     let (Some(mons), Some(wss)) = (json("monitors"), json("workspaces")) else {
@@ -274,40 +330,66 @@ fn fullscreen_monitors() -> HashMap<String, bool> {
         .flatten()
         .filter_map(|m| {
             let ws = m["activeWorkspace"]["id"].as_i64()?;
-            Some((m["name"].as_str()?.to_string(), full.get(&ws).copied().unwrap_or(false)))
+            Some((
+                m["name"].as_str()?.to_string(),
+                full.get(&ws).copied().unwrap_or(false),
+            ))
         })
         .collect()
 }
 
 fn to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn uniform_bytes(res: &Res, palette: &Palette) -> [u8; UNIFORM_SIZE] {
     let mut b = [0u8; UNIFORM_SIZE];
-    let words = [res.atlas.cell_w, res.atlas.cell_h, res.grid.cols, res.grid.rows, res.off.0, res.off.1, 0, 0];
+    let words = [
+        res.atlas.cell_w,
+        res.atlas.cell_h,
+        res.grid.cols,
+        res.grid.rows,
+        res.off.0,
+        res.off.1,
+        0,
+        0,
+    ];
     for (i, w) in words.iter().enumerate() {
         b[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
     }
     for (slot, rgb) in palette.colors.iter().enumerate() {
-        for c in 0..4 {
-            let mut v = if c == 3 { 1.0 } else { rgb[c] as f32 / 255.0 };
-            if res.srgb && c < 3 {
+        for (c, channel) in rgb.iter().enumerate() {
+            let mut v = *channel as f32 / 255.0;
+            if res.srgb {
                 v = to_linear(v);
             }
             let at = 32 + slot * 16 + c * 4;
             b[at..at + 4].copy_from_slice(&v.to_le_bytes());
         }
+        b[32 + slot * 16 + 12..32 + slot * 16 + 16].copy_from_slice(&1.0f32.to_le_bytes());
     }
     b
 }
 
 impl LiveApp {
     fn add_output(&mut self, qh: &QueueHandle<Self>, output: WlOutput) {
-        let name = self.output_state.info(&output).and_then(|i| i.name).unwrap_or_default();
+        let name = self
+            .output_state
+            .info(&output)
+            .and_then(|i| i.name)
+            .unwrap_or_default();
         let wl_surface = self.compositor.create_surface(qh);
-        let layer =
-            self.layer_shell.create_layer_surface(qh, wl_surface, Layer::Bottom, Some("asciiwall"), Some(&output));
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            wl_surface,
+            Layer::Bottom,
+            Some("asciiwall"),
+            Some(&output),
+        );
         layer.set_anchor(Anchor::all());
         layer.set_size(0, 0);
         layer.set_exclusive_zone(-1);
@@ -316,7 +398,10 @@ impl LiveApp {
             Ok(region) => layer.set_input_region(Some(region.wl_region())),
             Err(e) => eprintln!("asciiwall: cannot create input region: {e}"),
         }
-        let viewport = self.viewporter.as_ref().map(|vp| vp.get_viewport(layer.wl_surface(), qh, ()));
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(layer.wl_surface(), qh, ()));
         layer.commit();
 
         let display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
@@ -327,10 +412,13 @@ impl LiveApp {
         ));
         // SAFETY: the display outlives the app; `Out` drops the wgpu surface before the wl_surface.
         let surface = match unsafe {
-            self.render.gpu.instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(display),
-                raw_window_handle: window,
-            })
+            self.render
+                .gpu
+                .instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(display),
+                    raw_window_handle: window,
+                })
         } {
             Ok(s) => s,
             Err(e) => {
@@ -357,7 +445,9 @@ impl LiveApp {
         let info = self.output_state.info(output)?;
         let (w, h) = info.modes.iter().find(|m| m.current)?.dimensions;
         Some(match info.transform {
-            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270 => (h as u32, w as u32),
+            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270 => {
+                (h as u32, w as u32)
+            }
             _ => (w as u32, h as u32),
         })
     }
@@ -369,10 +459,17 @@ impl LiveApp {
         }
         let (pw, ph) = if self.outs[i].viewport.is_some() {
             let (pw, ph) = self.physical_size(&self.outs[i].output).unwrap_or((lw, lh));
-            self.outs[i].viewport.as_ref().unwrap().set_destination(lw as i32, lh as i32);
+            self.outs[i]
+                .viewport
+                .as_ref()
+                .unwrap()
+                .set_destination(lw as i32, lh as i32);
             (pw, ph)
         } else {
-            let s = self.output_state.info(&self.outs[i].output).map_or(1, |i| i.scale_factor.max(1)) as u32;
+            let s = self
+                .output_state
+                .info(&self.outs[i].output)
+                .map_or(1, |i| i.scale_factor.max(1)) as u32;
             let _ = self.outs[i].layer.set_buffer_scale(s);
             (lw * s, lh * s)
         };
@@ -390,12 +487,18 @@ impl LiveApp {
         let caps = out.surface.get_capabilities(&gpu.adapter);
         // 8-bit UNORM keeps shader blending in sRGB byte space, identical to the PNG snapshots.
         // Float formats are scRGB-linear, so fall back to an sRGB format (palette linearized) instead.
-        let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
-            .into_iter()
-            .find(|f| caps.formats.contains(f))
-            .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
-            .context("surface has no 8-bit formats")?;
-        let mut config = out.surface.get_default_config(&gpu.adapter, pw, ph).context("surface unsupported")?;
+        let format = [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        ]
+        .into_iter()
+        .find(|f| caps.formats.contains(f))
+        .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
+        .context("surface has no 8-bit formats")?;
+        let mut config = out
+            .surface
+            .get_default_config(&gpu.adapter, pw, ph)
+            .context("surface unsupported")?;
         config.format = format;
         config.view_formats = vec![];
         config.present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
@@ -411,92 +514,84 @@ impl LiveApp {
         configure(gpu, &out.surface, &config);
 
         let scale = pw as f32 / lw as f32;
-        let atlas = Atlas::new(&self.core.font, (self.core.cfg.font_size * scale).round());
-        let (cols, rows, ox, oy) = layout(pw, ph, atlas.cell_w, atlas.cell_h);
-
-        let atlas_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("atlas"),
-            size: wgpu::Extent3d { width: atlas.width(), height: atlas.cell_h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        gpu.queue.write_texture(
-            atlas_tex.as_image_copy(),
-            &atlas.coverage,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(atlas.width()), rows_per_image: None },
-            atlas_tex.size(),
+        let atlas = scenes::atlas_for(
+            &self.scene_id,
+            &self.core.font,
+            self.core.cfg.font_size * scale,
+            pw,
+            ph,
         );
-        let atlas_view = atlas_tex.create_view(&Default::default());
-        let cells = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cells"),
-            size: (cols * rows).div_ceil(2) as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let glyphs = Glyphs::new(gpu, atlas, pw, ph);
+        let (cols, rows) = (glyphs.grid.cols, glyphs.grid.rows);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniform"),
             size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("asciiwall"),
-            layout: Some(&render.layout),
-            vertex: wgpu::VertexState {
-                module: &render.shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &render.shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let aspect = (cols * atlas.cell_w) as f32 / (rows * atlas.cell_h) as f32;
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("asciiwall"),
+                layout: Some(&render.layout),
+                vertex: wgpu::VertexState {
+                    module: &render.shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &render.shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        let aspect = (cols * glyphs.atlas.cell_w) as f32 / (rows * glyphs.atlas.cell_h) as f32;
         let setup = Setup {
             cols,
             rows,
             aspect,
             seed: self.seed,
-            palette: &self.palette,
-            atlas: &atlas,
+            atlas: &glyphs.atlas,
             gpu: &render.cell,
         };
         let scene = scenes::build(&self.scene_id, &setup)?;
-        let bind_group = bind_group(render, &uniform, &cells, scene.as_ref(), &atlas_view);
+        let bind_group = bind_group(
+            render,
+            &uniform,
+            &glyphs.cells,
+            scene.as_ref(),
+            &glyphs.atlas_view,
+        );
         let mut res = Res {
             config,
             pipeline,
-            cells,
-            atlas_view,
+            cells: glyphs.cells,
+            atlas_view: glyphs.atlas_view,
             uniform,
             bind_group,
-            atlas,
-            off: (ox, oy),
+            atlas: glyphs.atlas,
+            scale,
+            off: glyphs.off,
             srgb: format.is_srgb(),
-            grid: Grid::new(cols, rows),
+            grid: glyphs.grid,
             shown: Vec::new(),
             scene,
             t: 0.0,
         };
         warmup(&mut res, self.seed);
-        gpu.queue.write_buffer(&res.uniform, 0, &uniform_bytes(&res, &self.palette));
+        gpu.queue
+            .write_buffer(&res.uniform, 0, &uniform_bytes(&res, &self.palette));
         eprintln!(
             "asciiwall: {} {}x{} ({}x{} logical) {:?} {:?}, grid {}x{}",
             self.outs[i].name, pw, ph, lw, lh, format, res.config.present_mode, cols, rows
@@ -505,36 +600,79 @@ impl LiveApp {
         Ok(())
     }
 
-    /// Swap in the current scene/palette on every configured output.
+    /// Swap in the current scene/palette on every configured output (with a new
+    /// atlas and grid when the scene wants another cell size).
     fn rebuild_scenes(&mut self) {
         let render = &self.render;
         for out in &mut self.outs {
             let Some(res) = &mut out.res else { continue };
+            let atlas = scenes::atlas_for(
+                &self.scene_id,
+                &self.core.font,
+                self.core.cfg.font_size * res.scale,
+                res.config.width,
+                res.config.height,
+            );
+            if (atlas.px, atlas.cell_w) != (res.atlas.px, res.atlas.cell_w) {
+                let g = Glyphs::new(&render.gpu, atlas, res.config.width, res.config.height);
+                (res.atlas, res.atlas_view, res.cells, res.grid, res.off) =
+                    (g.atlas, g.atlas_view, g.cells, g.grid, g.off);
+            }
             let setup = Setup {
                 cols: res.grid.cols,
                 rows: res.grid.rows,
-                aspect: (res.grid.cols * res.atlas.cell_w) as f32 / (res.grid.rows * res.atlas.cell_h) as f32,
+                aspect: (res.grid.cols * res.atlas.cell_w) as f32
+                    / (res.grid.rows * res.atlas.cell_h) as f32,
                 seed: self.seed,
-                palette: &self.palette,
                 atlas: &res.atlas,
                 gpu: &render.cell,
             };
             match scenes::build(&self.scene_id, &setup) {
                 Ok(scene) => {
-                    res.bind_group = bind_group(render, &res.uniform, &res.cells, scene.as_ref(), &res.atlas_view);
+                    res.bind_group = bind_group(
+                        render,
+                        &res.uniform,
+                        &res.cells,
+                        scene.as_ref(),
+                        &res.atlas_view,
+                    );
                     res.scene = scene;
                     res.shown.clear();
                     warmup(res, self.seed);
-                    render.gpu.queue.write_buffer(&res.uniform, 0, &uniform_bytes(res, &self.palette));
+                    render.gpu.queue.write_buffer(
+                        &res.uniform,
+                        0,
+                        &uniform_bytes(res, &self.palette),
+                    );
                 }
                 Err(e) => eprintln!("asciiwall: {e:#}"),
             }
         }
     }
 
+    fn refresh_pace(&mut self) {
+        let key = self.scene_id.key();
+        let mtime = std::fs::metadata(crate::config::Config::path())
+            .and_then(|meta| meta.modified())
+            .ok();
+        if self.pace_ready && self.pace_key == key && self.pace_mtime == mtime {
+            return;
+        }
+        match crate::config::Config::load() {
+            Ok(cfg) => self.core.cfg.tempo = cfg.tempo,
+            Err(e) => eprintln!("asciiwall: tempo unchanged: {e:#}"),
+        }
+        self.pace = scenes::clock_scale(&key, &self.core.cfg);
+        self.pace_key = key;
+        self.pace_mtime = mtime;
+        self.pace_ready = true;
+    }
+
     fn draw(&mut self) {
+        self.refresh_pace();
         let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f32().min(0.1);
+        // Scale the step, not the absolute clock, so Slow/Fast never rewinds the scene.
+        let dt = (now - self.last_frame).as_secs_f32().min(0.1) * self.pace;
         self.last_frame = now;
         let (gpu, qh) = (&self.render.gpu, &self.qh);
         for out in &mut self.outs {
@@ -555,7 +693,8 @@ impl LiveApp {
                 upload(&gpu.queue, &res.cells, res.grid.bytes());
             }
             let frame = match out.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+                wgpu::CurrentSurfaceTexture::Success(f)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                     configure(gpu, &out.surface, &res.config);
                     continue;
@@ -570,7 +709,10 @@ impl LiveApp {
                         view: &view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -598,9 +740,67 @@ impl LiveApp {
         for out in &mut self.outs {
             let paused = full.get(&out.name).copied().unwrap_or(false);
             if paused != out.paused {
-                eprintln!("asciiwall: {} {}", out.name, if paused { "paused" } else { "resumed" });
+                eprintln!(
+                    "asciiwall: {} {}",
+                    out.name,
+                    if paused { "paused" } else { "resumed" }
+                );
             }
             out.paused = paused;
+        }
+    }
+}
+
+/// Everything that depends on the cell size: glyph atlas, grid layout and the
+/// cell buffer CPU scenes upload into.
+struct Glyphs {
+    atlas: Atlas,
+    atlas_view: wgpu::TextureView,
+    cells: wgpu::Buffer,
+    grid: Grid,
+    off: (u32, u32),
+}
+
+impl Glyphs {
+    fn new(gpu: &Gpu, atlas: Atlas, pw: u32, ph: u32) -> Glyphs {
+        let (cols, rows, ox, oy) = layout(pw, ph, atlas.cell_w, atlas.cell_h);
+        let atlas_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("atlas"),
+            size: wgpu::Extent3d {
+                width: atlas.width(),
+                height: atlas.cell_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            atlas_tex.as_image_copy(),
+            &atlas.coverage,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas.width()),
+                rows_per_image: None,
+            },
+            atlas_tex.size(),
+        );
+        let atlas_view = atlas_tex.create_view(&Default::default());
+        let cells = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cells"),
+            size: (cols * rows).div_ceil(2) as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Glyphs {
+            atlas,
+            atlas_view,
+            cells,
+            grid: Grid::new(cols, rows),
+            off: (ox, oy),
         }
     }
 }
@@ -646,7 +846,11 @@ impl Host for LiveApp {
             Err(e) => eprintln!("asciiwall: {e:#}"),
         }
         // Static snapshot for the lock screen, picker and theme transitions.
-        let (cfg, font, id) = (self.core.cfg.clone(), self.core.font.clone(), id.to_string());
+        let (cfg, font, id) = (
+            self.core.cfg.clone(),
+            self.core.font.clone(),
+            id.to_string(),
+        );
         let gpu = self.render.gpu.clone();
         std::thread::spawn(move || {
             if let Err(e) = apply_scene(&cfg, &font, &id, seed, &GpuCell::with(gpu)) {
@@ -661,15 +865,47 @@ impl Host for LiveApp {
 }
 
 impl CompositorHandler for LiveApp {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: Transform) {}
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: i32,
+    ) {
+    }
+    fn transform_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: Transform,
+    ) {
+    }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
-        if let Some(out) = self.outs.iter_mut().find(|o| o.layer.wl_surface() == surface) {
+        if let Some(out) = self
+            .outs
+            .iter_mut()
+            .find(|o| o.layer.wl_surface() == surface)
+        {
             out.waiting = false;
         }
     }
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlSurface,
+        _: &WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for LiveApp {
@@ -711,7 +947,9 @@ impl LayerShellHandler for LiveApp {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        let Some(i) = self.outs.iter().position(|o| &o.layer == layer) else { return };
+        let Some(i) = self.outs.iter().position(|o| &o.layer == layer) else {
+            return;
+        };
         self.outs[i].logical = configure.new_size;
         if let Err(e) = self.setup(i) {
             eprintln!("asciiwall: {e:#}");
@@ -720,7 +958,15 @@ impl LayerShellHandler for LiveApp {
 }
 
 impl Dispatch<WpViewport, ()> for LiveApp {
-    fn event(_: &mut Self, _: &WpViewport, _: wp_viewport::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WpViewport,
+        _: wp_viewport::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 wayland_client::delegate_noop!(LiveApp: WpViewporter);

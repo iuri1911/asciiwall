@@ -1,4 +1,5 @@
-use crate::config::{Config, Mode, home};
+use crate::config::{Config, Mode};
+use crate::glyphs::Font;
 use crate::gpu::{Gpu, GpuCell};
 use crate::omarchy::{self, apply_scene, now_ms};
 use crate::{ipc, live, scenes};
@@ -6,7 +7,6 @@ use anyhow::Result;
 use calloop::signals::{Signal, Signals};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopHandle, LoopSignal};
-use crate::glyphs::Font;
 use std::time::Instant;
 
 /// State shared by the static and live daemons.
@@ -22,8 +22,15 @@ pub struct Core {
 /// Random enabled scene different from `current` (when possible).
 pub fn pick_random(cfg: &Config, current: Option<&str>) -> String {
     let ids = scenes::enabled_ids(&cfg.scenes);
-    let pool: Vec<&String> = ids.iter().filter(|id| Some(id.as_str()) != current).collect();
-    let pool = if pool.is_empty() { ids.iter().collect() } else { pool };
+    let pool: Vec<&String> = ids
+        .iter()
+        .filter(|id| Some(id.as_str()) != current)
+        .collect();
+    let pool = if pool.is_empty() {
+        ids.iter().collect()
+    } else {
+        pool
+    };
     pool[fastrand::usize(0..pool.len())].clone()
 }
 
@@ -42,7 +49,9 @@ impl Core {
     /// The live device if there is one; otherwise a device opened on first use and
     /// dropped with the cell (static mode holds no GPU between rotations).
     pub fn gpu_cell(&self) -> GpuCell {
-        self.gpu.clone().map_or_else(GpuCell::default, GpuCell::with)
+        self.gpu
+            .clone()
+            .map_or_else(GpuCell::default, GpuCell::with)
     }
 
     /// Regenerate picker thumbnails in the background after a theme change.
@@ -106,15 +115,15 @@ pub fn install_common<H: Host>(
     Ok(())
 }
 
-/// First scene: pending request, else keep the current one if it is still the background.
+/// First scene: pending request, else the last scene shown. Keeping it matters most
+/// after `power on`, where the stock background is showing and the user expects the
+/// ASCII scene they turned off, not a random one.
 pub fn initial_id(core: &Core) -> String {
     if let Some(req) = ipc::take_request().filter(|r| scenes::resolve(r).is_ok()) {
         return req;
     }
-    let ours = std::fs::read_link(home().join(".local/state/omarchy/current/background"))
-        .is_ok_and(|p| p.starts_with(omarchy::data_dir()));
     match &core.current {
-        Some(id) if ours && scenes::resolve(id).is_ok() => id.clone(),
+        Some(id) if scenes::resolve(id).is_ok() => id.clone(),
         _ => pick_random(&core.cfg, core.current.as_deref()),
     }
 }
@@ -129,7 +138,13 @@ impl Host for StaticHost {
         &mut self.core
     }
     fn show(&mut self, id: &str, seed: u64) {
-        if let Err(e) = apply_scene(&self.core.cfg, &self.core.font, id, seed, &self.core.gpu_cell()) {
+        if let Err(e) = apply_scene(
+            &self.core.cfg,
+            &self.core.font,
+            id,
+            seed,
+            &self.core.gpu_cell(),
+        ) {
             eprintln!("asciiwall: {e:#}");
         }
     }
@@ -139,13 +154,24 @@ impl Host for StaticHost {
 }
 
 pub fn run() -> Result<()> {
+    let cfg = Config::load()?;
+    // Exit 0 so `Restart=on-failure` leaves a turned-off daemon stopped.
+    if !cfg.enabled {
+        eprintln!("asciiwall: disabled; exiting");
+        return Ok(());
+    }
     // Block the signals before any thread exists so every thread inherits the mask.
     let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
     ipc::claim_pidfile()?;
     let result = (|| {
-        let cfg = Config::load()?;
         let font = crate::glyphs::load_font(&cfg.font_family)?;
-        let core = Core { cfg, font, current: omarchy::current_scene(), last_change: Instant::now(), gpu: None };
+        let core = Core {
+            cfg,
+            font,
+            current: omarchy::current_scene(),
+            last_change: Instant::now(),
+            gpu: None,
+        };
         match core.cfg.mode {
             Mode::Static => run_static(core, signals),
             Mode::Live => live::run(core, signals),
@@ -159,7 +185,10 @@ fn run_static(core: Core, signals: Signals) -> Result<()> {
     let mut event_loop: EventLoop<'static, StaticHost> = EventLoop::try_new()?;
     let interval = core.cfg.interval();
     install_common(&event_loop.handle(), signals, interval)?;
-    let mut host = StaticHost { core, signal: event_loop.get_signal() };
+    let mut host = StaticHost {
+        core,
+        signal: event_loop.get_signal(),
+    };
     let id = initial_id(&host.core);
     rotate(&mut host, id);
     event_loop.run(None, &mut host, |_| {})?;

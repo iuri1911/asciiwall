@@ -12,57 +12,54 @@ const SHAPE: &str = include_str!("shaders/shape.wgsl");
 const FRAME_SIZE: usize = 32 + 64;
 const WORKGROUP: u32 = 64;
 
-pub struct Spec {
-    pub name: &'static str,
-    src: &'static str,
+pub struct Spec<'a> {
+    pub name: &'a str,
+    pub src: &'a str,
     /// The scene defines `field(p)` and glyphs come from shape matching;
     /// otherwise it defines `cell(c)` and picks glyphs itself.
-    shaped: bool,
+    pub shaped: bool,
     /// Harri's global contrast exponent applied to each cell's ink vector.
-    contrast: f32,
+    pub contrast: f32,
     /// Glyph vocabulary per material (space is always allowed).
-    masks: [&'static str; 4],
-    /// Scene-specific words for binding 3.
-    data: Option<fn(&Spec) -> Vec<u32>>,
+    pub masks: [&'a str; 4],
+    /// Built-in scenes may attach words for binding 3. Packs cannot.
+    pub data: ShaderData,
     /// Point scenes: how many times the scatter pass calls `points(i)` per frame.
-    points: u32,
+    pub points: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderData {
+    None,
+    SourcePage,
 }
 
 pub const SPECS: &[Spec] = &[
     Spec {
-        name: "traffic",
-        src: include_str!("shaders/traffic.wgsl"),
-        shaped: true,
-        contrast: 1.2,
-        masks: ["-_=~/\\|().,'`", "oO0@*", ".'`*+", ""],
-        data: None,
+        name: "wave",
+        src: include_str!("shaders/wave.wgsl"),
+        shaped: false,
+        contrast: 1.0,
+        masks: ["", "", "", ""],
+        data: ShaderData::None,
         points: 0,
     },
     Spec {
         name: "singularity",
         src: include_str!("shaders/singularity.wgsl"),
         shaped: true,
-        contrast: 1.2,
-        masks: ["-_=~/\\|()<>.,:;'`", "oO0@*", ".'`*+", ""],
-        data: None,
+        contrast: 1.15,
+        masks: ["-_=~.*#%@", "(/\\|-_=.,'`", ".'`*+", ")/\\|-_=.,'`"],
+        data: ShaderData::None,
         points: 0,
     },
     Spec {
         name: "aurora",
         src: include_str!("shaders/aurora.wgsl"),
-        shaped: true,
-        contrast: 1.6,
-        masks: ["|!:;'.`\"", "/\\_^-.'`", "~-=_.,", ".'`*+"],
-        data: None,
-        points: 0,
-    },
-    Spec {
-        name: "fractal",
-        src: include_str!("shaders/fractal.wgsl"),
         shaped: false,
         contrast: 1.0,
         masks: ["", "", "", ""],
-        data: None,
+        data: ShaderData::None,
         points: 0,
     },
     Spec {
@@ -71,7 +68,7 @@ pub const SPECS: &[Spec] = &[
         shaped: true,
         contrast: 1.4,
         masks: ["/\\|_-=()`',.", "*@&%oO0", "',.`*", ""],
-        data: None,
+        data: ShaderData::None,
         points: 0,
     },
     Spec {
@@ -80,8 +77,8 @@ pub const SPECS: &[Spec] = &[
         shaped: true,
         contrast: 1.3,
         masks: ["-_=~/\\|()<>.,'`:;", "oO0@*", "", ""],
-        data: None,
-        points: 3 * 10_900 + 8 * 700,
+        data: ShaderData::None,
+        points: 3 * 9080 + 8 * 700,
     },
     Spec {
         name: "medusa",
@@ -89,7 +86,7 @@ pub const SPECS: &[Spec] = &[
         shaped: true,
         contrast: 1.3,
         masks: ["-_=~/\\|()<>.,'`:;", "", "", ""],
-        data: None,
+        data: ShaderData::None,
         points: 22 * 300 + 4 * 500 + 14 * 600 + 4 * 1800 + 1500,
     },
     Spec {
@@ -98,20 +95,59 @@ pub const SPECS: &[Spec] = &[
         shaped: false,
         contrast: 1.0,
         masks: ["", "", "", ""],
-        data: Some(source_page),
+        data: ShaderData::SourcePage,
+        points: 0,
+    },
+    Spec {
+        name: "saturn",
+        src: include_str!("shaders/saturn.wgsl"),
+        shaped: false,
+        contrast: 1.3,
+        masks: [".:;+*o#%@", "-_=~().'", "", ""],
+        data: ShaderData::None,
+        points: 0,
+    },
+    Spec {
+        name: "dandelion",
+        src: include_str!("shaders/dandelion.wgsl"),
+        shaped: true,
+        contrast: 1.4,
+        masks: ["/\\|-_.'", "*+.'", "@O0o", "|/\\()"],
+        data: ShaderData::None,
+        points: 0,
+    },
+    Spec {
+        name: "moonsea",
+        src: include_str!("shaders/moonsea.wgsl"),
+        shaped: false,
+        contrast: 1.0,
+        masks: ["", "", "", ""],
+        data: ShaderData::None,
         points: 0,
     },
 ];
 
-pub fn spec(name: &str) -> Option<&'static Spec> {
+pub fn spec(name: &str) -> Option<&'static Spec<'static>> {
     SPECS.iter().find(|s| s.name == name)
 }
 
-impl Spec {
+impl<'a> Spec<'a> {
+    pub fn source(&self) -> &str {
+        self.src
+    }
+
     fn module_source(&self) -> String {
         let shape = if self.shaped { SHAPE } else { "" };
-        let prepare = if self.src.contains("fn prepare(") { "" } else { "fn prepare(lid: u32) {}\n" };
-        let points = if self.src.contains("fn points(") { "" } else { "fn points(i: u32) {}\n" };
+        let prepare = if self.src.contains("fn prepare(") {
+            ""
+        } else {
+            "fn prepare(lid: u32) {}\n"
+        };
+        let points = if self.src.contains("fn points(") {
+            ""
+        } else {
+            "fn points(i: u32) {}\n"
+        };
         format!("{PRELUDE}\n{shape}\n{prepare}{points}{}", self.src)
     }
 }
@@ -131,14 +167,18 @@ fn mask(chars: &str) -> [u32; 4] {
 fn source_page(spec: &Spec) -> Vec<u32> {
     const WIDTH: usize = 84; // glass.wgsl COL_W
     const KEYWORDS: [&str; 14] = [
-        "fn", "let", "var", "return", "if", "else", "for", "while", "const", "struct", "loop", "break", "select", "mix",
+        "fn", "let", "var", "return", "if", "else", "for", "while", "const", "struct", "loop",
+        "break", "select", "mix",
     ];
     let src = spec.module_source();
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::with_capacity(2 + lines.len() * WIDTH);
     out.extend([lines.len() as u32, WIDTH as u32]);
     for line in &lines {
-        let bytes: Vec<u8> = line.bytes().map(|b| if (32..127).contains(&b) { b } else { b' ' }).collect();
+        let bytes: Vec<u8> = line
+            .bytes()
+            .map(|b| if (32..127).contains(&b) { b } else { b' ' })
+            .collect();
         let comment = line.find("//").unwrap_or(usize::MAX);
         let mut class = vec![0u32; bytes.len()];
         let mut i = 0;
@@ -262,16 +302,31 @@ impl ShaderScene {
             frame[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
         }
         let buffer = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
         };
-        let uniform = buffer("frame", &frame, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+        let uniform = buffer(
+            "frame",
+            &frame,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
         let shapes = buffer(
             "shapes",
             &words_to_bytes(s.atlas.shapes().as_flattened(), f32::to_le_bytes),
             wgpu::BufferUsages::STORAGE,
         );
-        let data = spec.data.map_or_else(|| vec![0], |f| f(spec));
-        let data = buffer("data", &words_to_bytes(&data, u32::to_le_bytes), wgpu::BufferUsages::STORAGE);
+        let words = match spec.data {
+            ShaderData::None => vec![0],
+            ShaderData::SourcePage => source_page(spec),
+        };
+        let data = buffer(
+            "data",
+            &words_to_bytes(&words, u32::to_le_bytes),
+            wgpu::BufferUsages::STORAGE,
+        );
         let cells = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cells"),
             size: pairs as u64 * 4,
@@ -279,7 +334,11 @@ impl ShaderScene {
             mapped_at_creation: false,
         });
         // Two words (hits, tone sum) per density sample; a stub for scenes without points.
-        let samples = if spec.points > 0 { s.cols as u64 * 2 * s.rows as u64 * 3 } else { 1 };
+        let samples = if spec.points > 0 {
+            s.cols as u64 * 2 * s.rows as u64 * 3
+        } else {
+            1
+        };
         let dens = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("density"),
             size: samples * 8,
@@ -290,11 +349,26 @@ impl ShaderScene {
             label: Some(spec.name),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: shapes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cells.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: data.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: dens.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shapes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: cells.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: data.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: dens.as_entire_binding(),
+                },
             ],
         });
         Ok(ShaderScene {
@@ -320,12 +394,18 @@ impl ShaderScene {
         self.queue.write_buffer(&self.uniform, 16, &t.to_le_bytes());
         if let Some((pipeline, dens, groups)) = &self.scatter {
             enc.clear_buffer(dens, 0, None);
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.dispatch_workgroups(*groups, 1, 1);
         }
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.dispatch_workgroups(self.groups, 1, 1);
@@ -345,7 +425,9 @@ impl ShaderScene {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         self.queue.submit([enc.finish()]);
         readback.map_async(wgpu::MapMode::Read, .., |_| ());
-        self.device.poll(wgpu::PollType::wait_indefinitely()).context("GPU readback")?;
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .context("GPU readback")?;
         let view = readback.get_mapped_range(..).context("GPU readback")?;
         let out = grid.cells.as_flattened_mut();
         let n = out.len();

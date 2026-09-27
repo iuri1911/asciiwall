@@ -22,7 +22,9 @@ impl Gpu {
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
-        let adapter = match scanout_gpu().and_then(|id| adapters.into_iter().find(|a| pci_id(a) == id)) {
+        let adapter = match scanout_gpu()
+            .and_then(|id| adapters.into_iter().find(|a| pci_id(a) == id))
+        {
             Some(a) => a,
             None => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
@@ -32,8 +34,15 @@ impl Gpu {
             .context("no GPU adapter")?,
         };
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).context("no GPU device")?;
-        Ok(Gpu { instance, adapter, device, queue, serial: Arc::default() })
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .context("no GPU device")?;
+        Ok(Gpu {
+            instance,
+            adapter,
+            device,
+            queue,
+            serial: Arc::default(),
+        })
     }
 }
 
@@ -54,8 +63,11 @@ fn scanout_gpu() -> Option<(u32, u32)> {
     let mut counts: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
     for entry in std::fs::read_dir(drm).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some((card, _connector)) = name.split_once('-') else { continue };
-        let connected = std::fs::read_to_string(entry.path().join("status")).is_ok_and(|s| s.trim() == "connected");
+        let Some((card, _connector)) = name.split_once('-') else {
+            continue;
+        };
+        let connected = std::fs::read_to_string(entry.path().join("status"))
+            .is_ok_and(|s| s.trim() == "connected");
         if !connected {
             continue;
         }

@@ -5,27 +5,58 @@
 // Three koi circle a pond (the body follows the swim path like a ribbon, so it
 // bends into turns), their spots are highlight-colored, and the water answers
 // with rings. Formulas are my own; the idea of drawing creatures as point
-// streams is theirs.
+// streams is theirs. Each workgroup first walks every swim path back by arc
+// length, so a body keeps its length however fast the head is moving.
 
 const FISH: u32 = 3u;
-const PER_FISH: u32 = 10900u; // 7 strands + tail 2000 + fins 800 + eyes 400
+const PER_FISH: u32 = 9080u; // 7 strands + tail 2000 + fins 800 + eyes 400
 const STRANDS: u32 = 7u;
-const PER_STRAND: u32 = 1100u;
+const PER_STRAND: u32 = 840u;
 const RINGS: u32 = 8u;
 const PER_RING: u32 = 700u;
+const NODES: u32 = 48u; // spine samples per fish, head first
+
+var<workgroup> spine_pos: array<vec2<f32>, 144>; // FISH * NODES
+var<workgroup> spine_dir: array<vec2<f32>, 144>;
 
 fn fish_len(f: u32) -> f32 {
-    return 0.3 + 0.05 * f32(f);
+    return 0.24 + 0.04 * f32(f);
 }
 
-// Head position of fish `f` at time `tau`: a slow figure-eight around the pond.
+// Head position of fish `f` at time `tau`: a lap around the pond on a wobbling
+// ellipse, wide enough that the tightest turn (radius ~ b^2/a) stays near a
+// body length. The middle fish swims the other way.
 fn path(f: u32, tau: f32) -> vec2<f32> {
     let ff = f32(f);
-    let w = tau * (0.075 - 0.01 * ff) + ff * 2.1;
-    return vec2<f32>(
-        (0.33 - 0.05 * ff) * F.aspect * sin(w),
-        (0.24 - 0.04 * ff) * sin(2.0 * w + ff) + 0.05 * (ff - 1.0)
-    );
+    let dir = select(1.0, -1.0, f == 1u);
+    let w = dir * tau * (0.11 - 0.012 * ff) + ff * 2.1 + f32(F.seed % 16u);
+    let a = (0.3 - 0.035 * ff) * F.aspect;
+    let b = 0.3 - 0.03 * ff;
+    let wobble = 1.0 + 0.1 * sin(2.0 * w + ff * 1.3);
+    let drift = 0.04 * vec2<f32>(sin(tau * 0.013 + ff), cos(tau * 0.017 + ff * 2.0));
+    return vec2<f32>(a * cos(w), b * sin(w)) * wobble + drift;
+}
+
+// Walk back from the head in equal arc-length steps (midpoint rule on the
+// path's speed), one thread per fish.
+fn prepare(lid: u32) {
+    if (lid >= FISH) {
+        return;
+    }
+    let f = lid;
+    let ds = fish_len(f) / f32(NODES - 1u);
+    let h = 0.02;
+    var tau = F.t;
+    for (var n = 0u; n < NODES; n++) {
+        let pos = path(f, tau);
+        let vel = (pos - path(f, tau - h)) / h;
+        let speed = max(length(vel), 1e-4);
+        spine_pos[f * NODES + n] = pos;
+        spine_dir[f * NODES + n] = vel / speed;
+        let mid = tau - 0.5 * ds / speed;
+        let vm = length(path(f, mid) - path(f, mid - h)) / h;
+        tau -= ds / max(vm, 1e-4);
+    }
 }
 
 struct Spine {
@@ -33,21 +64,21 @@ struct Spine {
     tangent: vec2<f32>,
 };
 
-// Spine at u (0 head .. 1 tail): the body trails along its own path.
+// Spine at u (0 head .. 1 tail), with the swimming wave travelling to the tail.
 fn spine(f: u32, u: f32) -> Spine {
-    // Time lag that puts the tail one body length back along the path.
-    let speed = length(path(f, F.t) - path(f, F.t - 0.1)) / 0.1;
-    let lag = u * fish_len(f) / max(speed, 1e-3);
-    let a = path(f, F.t - lag);
-    let b = path(f, F.t - lag - 0.05);
-    let tangent = normalize(a - b + vec2<f32>(1e-6, 0.0));
+    let x = clamp(u, 0.0, 1.0) * f32(NODES - 1u);
+    let i = min(u32(x), NODES - 2u);
+    let k = f * NODES + i;
+    let fr = x - f32(i);
+    let pos = mix(spine_pos[k], spine_pos[k + 1u], fr);
+    let tangent = normalize(mix(spine_dir[k], spine_dir[k + 1u], fr) + vec2<f32>(1e-6, 0.0));
     let normal = vec2<f32>(-tangent.y, tangent.x);
     let wave = fish_len(f) * 0.05 * pow(u, 1.4) * sin(u * 6.0 - F.t * 4.0 + f32(f));
-    return Spine(a + normal * wave, tangent);
+    return Spine(pos + normal * wave, tangent);
 }
 
 fn body_width(f: u32, u: f32) -> f32 {
-    return fish_len(f) * 0.11 * pow(sin(PI * min(u * 1.15, 1.0)), 0.6) * (1.0 - 0.65 * u) + 0.002;
+    return fish_len(f) * 0.14 * pow(sin(PI * min(u * 1.15, 1.0)), 0.6) * (1.0 - 0.65 * u) + 0.002;
 }
 
 fn fish_point(f: u32, j: u32) {

@@ -1,0 +1,12 @@
+id = "drift"
+kind = "shader"
+title = "Drift"
+shaped = true
+contrast = 1.0
+points = 0
+masks = ["-~=.", "", "", ""]
+pulse = 0.8
+license = "MIT"
+author = "asciiwall"
+credit = "original example; not a curated wallpaper"
+status = "example"

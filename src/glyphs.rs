@@ -33,16 +33,37 @@ pub fn load_font(family: &str) -> Result<Font> {
 
 /// One row of 95 monospace cells, 8-bit coverage.
 pub struct Atlas {
+    /// Em size it was rasterized at; with `cell_w` it identifies the atlas.
+    pub px: f32,
     pub cell_w: u32,
     pub cell_h: u32,
     pub coverage: Vec<u8>,
 }
 
+/// Advance width and line height of one em, as fractions of the em.
+pub fn em_metrics(font: &Font) -> (f32, f32) {
+    let upem = font.units_per_em().unwrap_or(1000.0);
+    (
+        font.h_advance_unscaled(font.glyph_id('M')) / upem,
+        (font.ascent_unscaled() - font.descent_unscaled()) / upem,
+    )
+}
+
 impl Atlas {
     /// `px` is the em size in pixels.
     pub fn new(font: &Font, px: f32) -> Atlas {
+        Atlas::spaced(font, px, 0)
+    }
+
+    /// Like `new`, with `track` extra pixels per cell and the glyph centered in
+    /// it, for art drawn in a font with wider cells than ours.
+    pub fn spaced(font: &Font, px: f32, track: u32) -> Atlas {
         let k = px / font.units_per_em().unwrap_or(1000.0);
-        let cell_w = (font.h_advance_unscaled(font.glyph_id('M')) * k).ceil().max(1.0) as u32;
+        let cell_w = (font.h_advance_unscaled(font.glyph_id('M')) * k)
+            .ceil()
+            .max(1.0) as u32
+            + track;
+        let shift = (track / 2) as i32;
         let ascent = font.ascent_unscaled() * k;
         let cell_h = (ascent - font.descent_unscaled() * k).ceil().max(1.0) as u32;
         let baseline = ascent.round();
@@ -50,11 +71,18 @@ impl Atlas {
         let width = GLYPHS * cell_w;
         let mut coverage = vec![0u8; (width * cell_h) as usize];
         for i in 1..GLYPHS {
-            let g = font.glyph_id((i as u8 + 32) as char).with_scale_and_position(scale, point(0.0, baseline));
-            let Some(outline) = font.outline_glyph(g) else { continue };
+            let g = font
+                .glyph_id((i as u8 + 32) as char)
+                .with_scale_and_position(scale, point(0.0, baseline));
+            let Some(outline) = font.outline_glyph(g) else {
+                continue;
+            };
             let b = outline.px_bounds();
             outline.draw(|gx, gy, c| {
-                let (x, y) = (b.min.x as i32 + gx as i32, b.min.y as i32 + gy as i32);
+                let (x, y) = (
+                    b.min.x as i32 + gx as i32 + shift,
+                    b.min.y as i32 + gy as i32,
+                );
                 if x < 0 || y < 0 || x >= cell_w as i32 || y >= cell_h as i32 {
                     return;
                 }
@@ -62,7 +90,12 @@ impl Atlas {
                 coverage[dst] = coverage[dst].max((c.clamp(0.0, 1.0) * 255.0).round() as u8);
             });
         }
-        Atlas { cell_w, cell_h, coverage }
+        Atlas {
+            px,
+            cell_w,
+            cell_h,
+            coverage,
+        }
     }
 
     pub fn width(&self) -> u32 {
@@ -73,7 +106,11 @@ impl Atlas {
     /// dimension normalized by its maximum over all glyphs. After Alex Harri,
     /// "ASCII characters are not pixels". Layout: 8 floats per glyph, last 2 zero.
     pub fn shapes(&self) -> Vec<[f32; 8]> {
-        let (cw, ch, aw) = (self.cell_w as usize, self.cell_h as usize, self.width() as usize);
+        let (cw, ch, aw) = (
+            self.cell_w as usize,
+            self.cell_h as usize,
+            self.width() as usize,
+        );
         let mut out = vec![[0f32; 8]; GLYPHS as usize];
         for (g, v) in out.iter_mut().enumerate() {
             for (j, d) in v.iter_mut().take(SHAPE_DIMS).enumerate() {

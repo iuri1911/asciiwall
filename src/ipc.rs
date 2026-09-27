@@ -1,8 +1,10 @@
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
-fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+pub fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 fn pid_file() -> PathBuf {
@@ -18,7 +20,8 @@ pub fn running_pid() -> Option<i32> {
     let path = pid_file();
     let pid: i32 = std::fs::read_to_string(&path).ok()?.trim().parse().ok()?;
     let alive = unsafe { libc::kill(pid, 0) } == 0
-        && std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "asciiwall");
+        && std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .is_ok_and(|c| c.trim() == "asciiwall");
     if alive {
         Some(pid)
     } else {
@@ -42,8 +45,20 @@ pub fn release_pidfile() {
 
 /// Ask the daemon to rotate (to the requested scene if one was written).
 pub fn signal_daemon(pid: i32) -> Result<()> {
-    if unsafe { libc::kill(pid, libc::SIGUSR1) } != 0 {
-        bail!("cannot signal daemon (pid {pid}): {}", std::io::Error::last_os_error());
+    send(pid, libc::SIGUSR1)
+}
+
+/// Stop a daemon, e.g. one started by hand rather than by systemd.
+pub fn stop_daemon(pid: i32) -> Result<()> {
+    send(pid, libc::SIGTERM)
+}
+
+fn send(pid: i32, signal: libc::c_int) -> Result<()> {
+    if unsafe { libc::kill(pid, signal) } != 0 {
+        bail!(
+            "cannot signal daemon (pid {pid}): {}",
+            std::io::Error::last_os_error()
+        );
     }
     Ok(())
 }

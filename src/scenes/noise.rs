@@ -19,7 +19,11 @@ impl Noise {
     #[inline]
     fn perlin(&self, x: f32, y: f32, z: f32) -> f32 {
         let (fx, fy, fz) = (x.floor(), y.floor(), z.floor());
-        let (xi, yi, zi) = (fx as i32 as usize & 255, fy as i32 as usize & 255, fz as i32 as usize & 255);
+        let (xi, yi, zi) = (
+            fx as i32 as usize & 255,
+            fy as i32 as usize & 255,
+            fz as i32 as usize & 255,
+        );
         let (x, y, z) = (x - fx, y - fy, z - fz);
         let (u, v, w) = (fade(x), fade(y), fade(z));
         let p = &self.p;
@@ -32,12 +36,24 @@ impl Noise {
             lerp(
                 v,
                 lerp(u, grad(p[aa], x, y, z), grad(p[ba], x - 1.0, y, z)),
-                lerp(u, grad(p[ab], x, y - 1.0, z), grad(p[bb], x - 1.0, y - 1.0, z)),
+                lerp(
+                    u,
+                    grad(p[ab], x, y - 1.0, z),
+                    grad(p[bb], x - 1.0, y - 1.0, z),
+                ),
             ),
             lerp(
                 v,
-                lerp(u, grad(p[aa + 1], x, y, z - 1.0), grad(p[ba + 1], x - 1.0, y, z - 1.0)),
-                lerp(u, grad(p[ab + 1], x, y - 1.0, z - 1.0), grad(p[bb + 1], x - 1.0, y - 1.0, z - 1.0)),
+                lerp(
+                    u,
+                    grad(p[aa + 1], x, y, z - 1.0),
+                    grad(p[ba + 1], x - 1.0, y, z - 1.0),
+                ),
+                lerp(
+                    u,
+                    grad(p[ab + 1], x, y - 1.0, z - 1.0),
+                    grad(p[bb + 1], x - 1.0, y - 1.0, z - 1.0),
+                ),
             ),
         )
     }

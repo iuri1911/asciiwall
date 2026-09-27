@@ -19,7 +19,10 @@ pub fn theme_name() -> String {
 
 fn parse_hex(s: &str) -> Option<[u8; 3]> {
     let s = s.trim();
-    let h = s.strip_prefix('#').or_else(|| s.strip_prefix("0x")).unwrap_or(s);
+    let h = s
+        .strip_prefix('#')
+        .or_else(|| s.strip_prefix("0x"))
+        .unwrap_or(s);
     if h.len() < 6 {
         return None;
     }
@@ -38,8 +41,15 @@ impl Palette {
         let fg = get("foreground").unwrap_or([255, 255, 255]);
         let mut colors = [[0u8; 3]; 8];
         colors[0] = get("background").unwrap_or([0, 0, 0]);
-        let mut ramp = ["dark_foreground", "blue", "cyan", "accent", "magenta", "foreground"]
-            .map(|k| get(k).unwrap_or(fg));
+        let mut ramp = [
+            "dark_foreground",
+            "blue",
+            "cyan",
+            "accent",
+            "magenta",
+            "foreground",
+        ]
+        .map(|k| get(k).unwrap_or(fg));
         ramp.sort_by(|a, b| luminance(*a).total_cmp(&luminance(*b)));
         colors[1..7].copy_from_slice(&ramp);
         colors[7] = get("light_foreground").unwrap_or(fg);
@@ -48,16 +58,9 @@ impl Palette {
 
     /// Current Omarchy theme palette; a missing colors.toml yields the fallback palette.
     pub fn load() -> Palette {
-        let src = std::fs::read_to_string(current_dir().join("theme/colors.toml")).unwrap_or_default();
+        let src =
+            std::fs::read_to_string(current_dir().join("theme/colors.toml")).unwrap_or_default();
         Palette::from_toml(&src)
-    }
-
-    /// Nearest foreground slot (1..=7) by squared RGB distance.
-    pub fn nearest(&self, rgb: [u8; 3]) -> u8 {
-        let dist = |c: [u8; 3]| -> i32 {
-            (0..3).map(|i| (c[i] as i32 - rgb[i] as i32).pow(2)).sum()
-        };
-        (1..8u8).min_by_key(|&i| dist(self.colors[i as usize])).unwrap()
     }
 }
 
@@ -73,7 +76,8 @@ mod tests {
 
     #[test]
     fn missing_keys_fall_back_and_ramp_sorted() {
-        let p = Palette::from_toml("foreground = \"#808080\"\nblue = \"#000010\"\ncyan = \"#ffffff\"");
+        let p =
+            Palette::from_toml("foreground = \"#808080\"\nblue = \"#000010\"\ncyan = \"#ffffff\"");
         assert_eq!(p.colors[0], [0, 0, 0]);
         assert_eq!(p.colors[7], [0x80, 0x80, 0x80]);
         assert_eq!(p.colors[1], [0, 0, 0x10]);

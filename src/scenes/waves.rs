@@ -13,7 +13,11 @@ impl Waves {
         let mut rng = fastrand::Rng::with_seed(seed);
         let mut r = |lo: f32, hi: f32| lo + rng.f32() * (hi - lo);
         let params = [(); 3].map(|_| (r(0.05, 0.2), r(0.05, 0.2), r(0.0, TAU)));
-        Waves { aspect, params, pos: [(0.0, 0.0); 3] }
+        Waves {
+            aspect,
+            params,
+            pos: [(0.0, 0.0); 3],
+        }
     }
 }
 
