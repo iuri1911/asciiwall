@@ -21,7 +21,7 @@ fn pulse(delay: f32) -> f32 {
 }
 
 fn center() -> vec2<f32> {
-    let rise = fract(F.t * 0.004 + f32(F.seed % 97u) / 97.0);
+    let rise = fract(F.t * 0.004 + 0.5);
     return vec2<f32>(0.22 * F.aspect * sin(F.t * 0.021), 1.4 * rise - 0.55 + 0.015 * pulse(0.0));
 }
 

@@ -75,7 +75,8 @@ pub fn save_png(img: &RgbImage, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Render one frame of a scene to an image. `time` defaults to `seed % 1000` seconds;
+/// Render one frame of a scene to an image. `time` defaults to the scene's
+/// initial phase (zero for medusa, `seed % 1000` seconds otherwise).
 /// `font_px` is the configured size; `scenes::atlas_for` adapts it per scene.
 #[allow(clippy::too_many_arguments)]
 pub fn snapshot(
@@ -137,7 +138,7 @@ pub fn frames(
     };
     let mut scene = scenes::build(id, &setup)?;
     let mut grid = Grid::new(cols, rows);
-    let mut t = time.unwrap_or((seed % 1000) as f32);
+    let mut t = time.unwrap_or_else(|| scenes::start_time(id, seed));
     for _ in 0..scene.warmup_steps() {
         scene.update(t, SNAPSHOT_DT, &mut grid);
         t += SNAPSHOT_DT;

@@ -589,7 +589,7 @@ impl LiveApp {
             scene,
             t: 0.0,
         };
-        warmup(&mut res, self.seed);
+        warmup(&mut res, &self.scene_id, self.seed);
         gpu.queue
             .write_buffer(&res.uniform, 0, &uniform_bytes(&res, &self.palette));
         eprintln!(
@@ -638,7 +638,7 @@ impl LiveApp {
                     );
                     res.scene = scene;
                     res.shown.clear();
-                    warmup(res, self.seed);
+                    warmup(res, &self.scene_id, self.seed);
                     render.gpu.queue.write_buffer(
                         &res.uniform,
                         0,
@@ -806,8 +806,8 @@ impl Glyphs {
 }
 
 /// Start a scene where the matching static snapshot starts, then advance it past warm-up.
-fn warmup(res: &mut Res, seed: u64) {
-    res.t = (seed % 1000) as f32;
+fn warmup(res: &mut Res, id: &SceneId, seed: u64) {
+    res.t = scenes::start_time(id, seed);
     for _ in 0..res.scene.warmup_steps() {
         res.scene.update(res.t, SNAPSHOT_DT, &mut res.grid);
         res.t += SNAPSHOT_DT;

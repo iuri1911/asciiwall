@@ -22,7 +22,7 @@ Evaluated once per character cell in a compute shader (256×67 cells on a 4K mon
 | `aurora` | original boreal nightscape | broad folding ribbons of light above a pine-lined lake, with stars and faint reflections |
 | `blossom` | [harshitlog](https://x.com/harshitlog/status/2099485977853231443) | a swaying cherry branch: wood in line glyphs, flowers in `* @ o`, falling petals |
 | `koi` | [yuruyurau](https://x.com/yuruyurau)'s point-stream creatures | three koi made of point streams circling a pond with ripple rings; each spine is re-sampled by arc length every frame, so a body keeps its length through slow turns |
-| `medusa` | yuruyurau | a pulsing jellyfish of ribs, frilled arms and trailing tentacles, marine snow |
+| `medusa` | yuruyurau | a pulsing jellyfish that opens centered, with ribs, frilled arms and trailing tentacles, marine snow |
 | `glass` | harshitlog — "bend images through glass" | lenses drifting over this shader's own source, magnifying whole cells; rims drawn with `_ / | \ -` |
 | `saturn` | [a1k0n/Andy Sloane's `donut.c`](https://www.a1k0n.net/2011/07/20/donut-math.html) lighting method | analytically ray-cast planet with a terminator, drifting bands, Cassini-divided rings, mutual shadows, moons and sparse stars |
 | `dandelion` | Fibonacci sphere plus Bridson-style curl-noise wind | a slowly turning seed clock on a hand-set stem; smooth gusts detach persistent parachute seeds and their places regrow |

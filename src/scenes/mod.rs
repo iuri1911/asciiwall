@@ -64,6 +64,14 @@ pub enum SceneId {
     Image(PathBuf),
     Pack(String),
 }
+/// Medusa opens in view; other scenes retain their seed-derived starting phase.
+pub fn start_time(id: &SceneId, seed: u64) -> f32 {
+    if matches!(id, SceneId::Pattern("medusa")) {
+        0.0
+    } else {
+        (seed % 1000) as f32
+    }
+}
 
 impl SceneId {
     /// Config key for this scene's tempo.
