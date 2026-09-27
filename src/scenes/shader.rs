@@ -47,9 +47,9 @@ pub const SPECS: &[Spec] = &[
     Spec {
         name: "singularity",
         src: include_str!("shaders/singularity.wgsl"),
-        shaped: true,
-        contrast: 1.15,
-        masks: ["-_=~.*#%@", "(/\\|-_=.,'`", ".'`*+", ")/\\|-_=.,'`"],
+        shaped: false,
+        contrast: 1.3,
+        masks: ["-_=~.'`", "()/\\-_=.,'`", "()/\\|-_.'`", ""],
         data: ShaderData::None,
         points: 0,
     },

@@ -1,22 +1,32 @@
-// singularity — after XorDev's black holes, Gargantua as the picture: a true
-// empty shadow, one hot photon ring, and an accretion disk that is streaks
-// rather than a bar of text. The approaching limb is bright and continuous;
-// the receding limb breaks into .-~ . A jet of rising sparks and a few embers
-// in orbit keep it from sitting still. Far-side light is lensed into arcs
-// over the hole, drawn with ( on the left and ) on the right.
+// singularity — Gargantua from *Interstellar* as the picture, XorDev's black
+// holes for the idea of drawing one from a few analytic layers; formulas are
+// ours. Seen almost edge-on: an empty shadow, a thin photon ring, the near side
+// of the accretion disk crossing in front of the shadow, and the far side lensed
+// into a halo over the top (and a thinner one under the bottom) that tapers into
+// the disk at both sides. Gas is drawn the way saturn draws its planet: cells
+// wholly inside it take a density ramp, edge cells are shape-matched to line
+// glyphs. Keplerian streaks orbit faster inward; the approaching (left) side is
+// Doppler-beamed, the receding side thins out to dots.
 
-const CENTER: vec2<f32> = vec2<f32>(0.0, -0.02);
-const RS: f32 = 0.20;
-const ROLL: f32 = 0.04;
-const K: f32 = 0.22;
-const RIN: f32 = 1.15;
-const ROUT: f32 = 3.6;
-const RING: f32 = 1.04;
-const ARCW: f32 = 0.72;
-const LANES: f32 = 2.2;
-const SPIN: f32 = 0.22;
+const CENTER: vec2<f32> = vec2<f32>(0.0, 0.01);
+const RS: f32 = 0.2; // shadow radius, screen heights; everything below is in shadow radii
+const ROLL: f32 = 0.05; // disk tilt on screen
+const K: f32 = 0.17; // projected disk aspect (sine of the viewing angle)
+const RIN: f32 = 1.35; // disk inner edge
+const ROUT: f32 = 3.8;
+const RING: f32 = 1.04; // photon ring
+const HALO: f32 = 0.55; // upper halo thickness at its crown
+const LANES: f32 = 2.2; // streak lanes per shadow radius
+const SPIN: f32 = 0.3; // orbital speed at the inner edge, radians per second
+const RAMP = array<u32, 10>(32u, 46u, 45u, 126u, 61u, 43u, 42u, 35u, 37u, 64u); //  .-~=+*#%@
 
-fn orbit_noise(x: f32, n: f32, lane: f32) -> f32 {
+// Sample kinds: sky (stars may show), gas (ramp when a cell is all gas), hole.
+const SKY: f32 = 0.0;
+const GAS: f32 = 1.0;
+const HOLE: f32 = 2.0;
+
+// Value noise around a closed orbit of `n` cells, so it wraps without a seam.
+fn loop_noise(x: f32, n: f32, lane: f32) -> f32 {
     let i = floor(x);
     let f = x - i;
     let j = i + 1.0;
@@ -25,163 +35,190 @@ fn orbit_noise(x: f32, n: f32, lane: f32) -> f32 {
     return mix(a, b, f * f * (3.0 - 2.0 * f));
 }
 
+// One lane of gas: clumps along the orbit, drifting at the lane's Kepler rate.
 fn lane(l: f32, psi: f32) -> f32 {
     let rho = RIN + (l + 0.5) / LANES;
     let turns = (psi - SPIN * pow(RIN / rho, 1.5) * F.t) / TAU;
-    let n = max(round(rho * 5.0), 5.0);
-    return 0.65 * orbit_noise(turns * n, n, l) + 0.35 * orbit_noise(turns * n * 2.0, n * 2.0, l + 19.0);
+    let n = max(round(rho * 4.0), 4.0);
+    return 0.65 * loop_noise(turns * n, n, l) + 0.35 * loop_noise(turns * n * 2.0, n * 2.0, l + 19.0);
 }
 
-// (ink, tone). Streaks, not a filled band. `solid` only thickens the hot limb.
-fn shade(rho: f32, psi: f32, tex: f32, solid: f32) -> vec2<f32> {
-    let u = (rho - RIN) / (ROUT - RIN);
-    let streak = smoothstep(0.55, 0.82, tex);
-    let heat = pow(RIN / rho, 2.4);
-    // Left side approaches. Beam it hard and let the right side go quiet.
-    let dop = 1.0 - 0.72 * sqrt(RIN / rho) * cos(psi);
-    let beam = dop * dop * dop;
-    let edge = smoothstep(-0.02, 0.03, u) * (1.0 - smoothstep(0.08, 0.85, u));
-    let fill = solid * clamp(beam, 0.0, 1.2) * (1.0 - u);
-    let ink = min(1.0, edge * mix(streak, 0.85, fill) * (0.25 + 0.85 * min(beam, 1.4)));
-    let tone = 0.12 + heat * min(beam, 1.6) * (0.45 + 0.55 * streak);
-    return vec2<f32>(ink, tone);
-}
-
-fn disk(rho: f32, psi: f32, solid: f32) -> vec2<f32> {
-    if (rho < RIN - 0.08 || rho > ROUT) {
-        return vec2<f32>(0.0);
-    }
-    let x = (rho - RIN) * LANES - 0.5;
+// Lanes blend smoothly across radius: in front the radius is foreshortened to
+// a fraction of a row, so only variation along the orbit may be sharp.
+fn streaks(rho: f32, psi: f32) -> f32 {
+    let x = max(rho - RIN, 0.0) * LANES;
     let l = floor(x);
-    let tex = mix(lane(l, psi), lane(l + 1.0, psi), smoothstep(0.2, 0.8, x - l));
-    return shade(rho, psi, tex, solid);
+    return mix(lane(l, psi), lane(l + 1.0, psi), smoothstep(0.0, 1.0, x - l));
 }
 
-fn stars(q: vec2<f32>, r: f32) -> vec3<f32> {
-    let sp = q * (1.0 - 0.85 / (r * r)) * RS;
-    let cs = cell_size();
-    let g = cs * vec2<f32>(5.0, 3.0);
-    let id = floor(sp / g);
-    let h = hash21(id);
-    if (h < 0.94) {
-        return vec3<f32>(0.0);
+// Glow of the gas at disk radius `rho`, azimuth `psi` (0 right, pi/2 far side,
+// pi left, -pi/2 near side; it orbits toward increasing psi, so the left side
+// comes at us). (ink, tone); tone > 1 = highlight.
+fn glow(rho: f32, psi: f32) -> vec2<f32> {
+    let inner = smoothstep(RIN - 0.06, RIN + 0.12, rho);
+    let outer = 1.0 - smoothstep(1.9, ROUT, rho);
+    let heat = pow(RIN / rho, 1.5);
+    let dop = 1.0 - 0.3 * sqrt(RIN / rho) * cos(psi);
+    let e = inner * outer * heat * dop * dop * (0.35 + 0.8 * streaks(rho, psi));
+    var tone = 0.1 + 0.75 * min(e, 1.0);
+    if (e > 1.35 && rho < RIN + 0.5) {
+        tone = 1.2;
     }
-    let c = (id + 0.3 + 0.4 * vec2<f32>(hash21(id + 3.1), hash21(id + 7.7))) * g;
-    let e = length((sp - c) / cs * vec2<f32>(1.0, 1.5));
-    let tw = 0.6 + 0.4 * sin(F.t * 0.8 + h * 60.0);
-    return vec3<f32>(0.8 * tw * smoothstep(0.4, 0.15, e), select(0.3, 1.2, h > 0.985), 2.0);
+    return vec2<f32>(clamp(1.1 * e, 0.0, 1.0), tone);
 }
 
-// Rising sparks in a narrow jet, above and below the shadow.
-fn jet(q: vec2<f32>) -> vec3<f32> {
-    let ay = abs(q.y);
-    if (ay < 1.05 || ay > 2.6) {
-        return vec3<f32>(0.0);
-    }
-    let rise = fract(ay * 1.7 - F.t * 0.18 * sign(q.y));
-    let w = 0.035 + 0.05 * (ay - 1.0);
-    let column = stroke(abs(q.x) * RS, vec2<f32>(1.0, 0.0));
-    let spark = smoothstep(0.28, 0.0, abs(rise - 0.45));
-    let v = max(column * 0.7, spark * smoothstep(0.12, 0.02, abs(q.x))) * exp(-(ay - 1.05) * 0.4);
-    if (v < 0.05) {
-        return vec3<f32>(0.0);
-    }
-    return vec3<f32>(min(v * 1.4, 1.0), select(0.55, 1.4, spark > 0.3), 1.0);
-}
-
-fn embers(q: vec2<f32>) -> vec3<f32> {
-    var best = vec3<f32>(0.0);
-    let cs = cell_size() / RS;
-    for (var i = 0; i < 6; i++) {
-        let fi = f32(i);
-        let rho = 1.45 + fi * 0.28;
-        let ang = F.t * (0.35 / pow(rho, 1.5)) + fi * 1.7 + hash11(fi) * TAU;
-        let c = vec2<f32>(cos(ang), sin(ang) * K) * rho;
-        let e = length((q - c) / cs);
-        let v = smoothstep(0.55, 0.12, e);
-        if (v > best.x) {
-            best = vec3<f32>(v, 1.45, 2.0);
-        }
-    }
-    return best;
-}
-
-fn field(p0: vec2<f32>) -> vec3<f32> {
+// One sample: (ink, tone, material, kind). Materials: 0 disk, 1 halo, 2 ring.
+fn sample(p0: vec2<f32>) -> vec4<f32> {
     var p = p0 - CENTER;
-    let arc = select(3.0, 1.0, p.x < 0.0);
     if ((F.seed & 1u) == 1u) {
         p.x = -p.x;
     }
     let q = rot(ROLL) * p / RS;
     let r = length(q);
+    // Undo the foreshortening to get disk-plane polar coordinates.
     let ez = q.y / K;
-    let rn = length(vec2<f32>(q.x, ez));
+    let rho = length(vec2<f32>(q.x, ez));
+    let psi = atan2(ez, q.x);
+    let in_disk = rho > RIN - 0.06 && rho < ROUT;
 
-    // Near side of the disk, in front of the shadow. Streaks, hot on the left.
-    if (q.y < -0.02 && rn > RIN * 0.98 && rn < ROUT) {
-        let d = disk(rn, atan2(ez, q.x), 0.0);
-        if (d.x > 0.08) {
-            return vec3<f32>(min(d.x, 0.72), d.y, 0.0);
+    // The near side of the disk is in front of everything, the shadow included.
+    if (q.y < 0.0 && in_disk) {
+        let g = glow(rho, psi);
+        if (g.x > 0.04 || r < 1.0) {
+            return vec4<f32>(g, 0.0, GAS);
         }
     }
-
-    var best = vec3<f32>(0.0, 0.0, 2.0);
-    if (r < 0.98) {
-        return best;
+    if (r < 1.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, HOLE);
     }
-    if (r > 1.8) {
-        best = stars(q, r);
+    var best = vec4<f32>(0.0, 0.0, 0.0, SKY);
+    // The far side seen directly, beside the shadow.
+    if (q.y >= 0.0 && in_disk) {
+        best = vec4<f32>(glow(rho, psi), 0.0, GAS);
     }
-
-    let phi = atan2(q.y, q.x);
+    // The far side again, lensed over the shadow (and, dimmer and thinner, under
+    // it). Radius in the halo maps to disk radius; angle around the hole maps to
+    // azimuth, so the halo streams the same way as the far side.
+    let th = atan2(q.y, q.x);
+    let up = q.y > 0.0;
+    let w = select(0.28, 1.0, up) * HALO * (0.25 + 0.75 * pow(abs(sin(th)), 0.7));
+    let s = (r - RING - 0.05) / w;
+    if (s > 0.0 && s < 1.0) {
+        let g = glow(RIN + s * (ROUT - RIN) * 0.55, abs(th));
+        let ink = g.x * select(0.7, 0.95, up) * smoothstep(1.0, 0.6, s);
+        if (ink > best.x) {
+            best = vec4<f32>(ink, g.y, 1.0, GAS);
+        }
+    }
+    // Photon ring: one thin circle, hotter on the approaching side.
     let n = rot(-ROLL) * (q / r);
-    let row = cell_size().y / RS;
+    let dop = 1.0 - 0.5 * q.x / r;
+    let ring = stroke(abs(r - RING) * RS, n) * (0.55 + 0.3 * dop);
+    if (ring > best.x) {
+        best = vec4<f32>(min(ring, 1.0), select(0.75, 1.2, dop > 1.3), 2.0, SKY);
+    }
+    return best;
+}
 
-    if (q.y > 0.02) {
-        let d = disk(rn, atan2(ez, q.x), 0.05);
-        if (d.x > best.x) {
-            best = vec3<f32>(d.x, d.y, 0.0);
+// Still stars on a scene-space lattice, pulled toward the hole a little
+// (lensing), never inside the halo.
+fn star(p0: vec2<f32>) -> u32 {
+    var p = p0 - CENTER;
+    if ((F.seed & 1u) == 1u) {
+        p.x = -p.x;
+    }
+    let r = length(p) / RS;
+    if (r < 2.2) {
+        return 0u;
+    }
+    let warp = 1.0 - 0.9 / (r * r);
+    let sp = p * warp;
+    let cs = cell_size() * warp;
+    let lat = vec2<f32>(0.045, 0.06);
+    let id = floor(sp / lat);
+    let h = hash21(id);
+    if (h < 0.86) {
+        return 0u;
+    }
+    let c = (id + 0.5 + 0.6 * (vec2<f32>(hash21(id + 3.7), hash21(id + 9.1)) - 0.5)) * lat;
+    let d = abs(c - sp);
+    if (d.x > 0.5 * cs.x || d.y > 0.5 * cs.y) {
+        return 0u;
+    }
+    let b = hash21(id + 5.3);
+    var ch = 46u; // .
+    if (b > 0.94) {
+        ch = 42u; // *
+    } else if (b > 0.82) {
+        ch = 43u; // +
+    } else if (b > 0.6) {
+        ch = 39u; // '
+    }
+    return pack(ch, 1u + u32(b * 3.0));
+}
+
+fn cell(c: vec2<u32>) -> u32 {
+    var v: array<f32, 6>;
+    var top = 0.0;
+    var tone = 0.0;
+    var hi = 0.0;
+    var mat = 0u;
+    var gas = 0u;
+    var hole = false;
+    var sum = 0.0;
+    var tsum = 0.0;
+    var mats = 0u;
+    for (var j = 0u; j < 6u; j++) {
+        let s = sample(to_p(c, vec2<f32>(0.25 + 0.5 * f32(j & 1u), (f32(j >> 1u) + 0.5) / 3.0)));
+        v[j] = clamp(s.x, 0.0, 1.0);
+        sum += v[j];
+        tsum += s.y;
+        hi = max(hi, s.y);
+        gas += u32(s.w == GAS);
+        hole = hole || s.w == HOLE;
+        mats |= 1u << u32(s.z);
+        if (v[j] > top) {
+            top = v[j];
+            tone = s.y;
+            mat = u32(s.z);
         }
     }
-
-    // Lensed far side: two clean arcs, packed against the shadow, not a hatch.
-    let a0 = RING + 1.3 * row;
-    if (q.y > 0.15 && r > a0 - row && r < a0 + ARCW) {
-        for (var k = 0.0; k < 3.0; k += 1.0) {
-            let rl = a0 + row * (1.4 * k + 0.55 * k * k);
-            let s = (rl - a0) / ARCW;
-            let taper = smoothstep(0.0, 0.18, sin(phi) - 0.15 - 0.55 * s);
-            let d = disk(RIN + s * (ROUT - RIN) * 0.8, phi, 0.35);
-            let v = min(1.0, d.x * taper * stroke(abs(r - rl) * RS, n) * 1.5);
-            if (v > best.x) {
-                best = vec3<f32>(v, max(d.y, 0.7 * (1.0 - s)), arc);
+    if (top < 0.03) {
+        if (gas == 0u && !hole) {
+            return star(to_p(c, vec2<f32>(0.5)));
+        }
+        return 0u;
+    }
+    // Wholly inside the gas: density ramp.
+    if (gas == 6u && mats == (1u << mat)) {
+        let slot = select(tone_slot(tsum / 6.0), 7u, hi > 1.0);
+        return pack(RAMP[min(9u, u32(sum / 6.0 * 10.0))], slot);
+    }
+    // Edges: nearest glyph by shape within the material's vocabulary.
+    for (var j = 0u; j < 6u; j++) {
+        v[j] = pow(v[j] / top, F.contrast) * top;
+    }
+    let a = vec4<f32>(v[0], v[1], v[2], v[3]);
+    let b = vec2<f32>(v[4], v[5]);
+    let mask = F.masks[mat];
+    var best = 0u;
+    var best_d = dot(a, a) + dot(b, b);
+    for (var w = 0u; w < 3u; w++) {
+        var bits = mask[w];
+        while (bits != 0u) {
+            let k = w * 32u + countTrailingZeros(bits);
+            bits &= bits - 1u;
+            let da = shapes[2u * k] - a;
+            let db = shapes[2u * k + 1u].xy - b;
+            let d = dot(da, da) + dot(db, db);
+            if (d < best_d) {
+                best_d = d;
+                best = k;
             }
         }
     }
-    // A thin answering arc under the hole.
-    let rb = RING + 1.8 * row;
-    if (q.y < -0.05 && abs(r - rb) < 2.2 * row && abs(phi) > 2.2) {
-        let d = disk(RIN + 0.3, phi + PI, 0.15);
-        let v = d.x * stroke(abs(r - rb) * RS, n);
-        if (v > best.x) {
-            best = vec3<f32>(v, d.y, arc);
-        }
+    if (best == 0u) {
+        return 0u;
     }
-
-    // Photon ring: one bright circle, hotter where the disk approaches.
-    let dop = 1.0 - 0.55 * n.x;
-    let ring = max(stroke(abs(r - RING) * RS, n), 0.55 * stroke(abs(r - RING - 0.05) * RS, n)) * (0.75 + 0.4 * dop);
-    if (ring > best.x) {
-        best = vec3<f32>(min(ring, 1.0), 1.2 + 0.3 * dop, arc);
-    }
-
-    let j = jet(q);
-    if (j.x > best.x) {
-        best = j;
-    }
-    let e = embers(q);
-    if (e.x > best.x && r > 1.15) {
-        best = e;
-    }
-    return best;
+    return best | (tone_slot(tone) << 8u);
 }

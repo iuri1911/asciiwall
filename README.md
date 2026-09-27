@@ -18,7 +18,7 @@ Evaluated once per character cell in a compute shader (256×67 cells on a 4K mon
 | scene | inspired by | ASCII take |
 |---|---|---|
 | `wave` | [Hokusai's *The Great Wave off Kanagawa*](https://www.metmuseum.org/art/collection/search/45434) (public domain) | a curling crest with foam claws and spray, moving streamlines, rolling swells and distant Fuji |
-| `singularity` | XorDev's black holes; *Interstellar*'s Gargantua as visual reference | an empty shadow inside a photon ring, a streaked disk bright on the approaching limb, a jet of sparks |
+| `singularity` | XorDev's black holes; *Interstellar*'s Gargantua as visual reference | Gargantua seen almost edge-on: an empty shadow and thin photon ring, the near side of the disk crossing in front, the far side lensed into a halo over the top and a thinner one underneath; gas cells take a density ramp (` .-~=+*#%@`), edges take line glyphs, Keplerian streaks orbit faster inward and the approaching side is beamed brighter |
 | `aurora` | original boreal nightscape | broad folding ribbons of light above a pine-lined lake, with stars and faint reflections |
 | `blossom` | [harshitlog](https://x.com/harshitlog/status/2099485977853231443) | a swaying cherry branch: wood in line glyphs, flowers in `* @ o`, falling petals |
 | `koi` | [yuruyurau](https://x.com/yuruyurau)'s point-stream creatures | three koi made of point streams circling a pond with ripple rings; each spine is re-sampled by arc length every frame, so a body keeps its length through slow turns |
