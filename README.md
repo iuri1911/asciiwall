@@ -58,9 +58,11 @@ From the checkout, run `asciiwall media --out-dir media` to regenerate every ena
 
 ## Install
 
-On Omarchy, from a checkout:
+On Omarchy:
 
 ```sh
+git clone https://github.com/iuri1911/asciiwall.git
+cd asciiwall
 ./scripts/install.sh
 ```
 

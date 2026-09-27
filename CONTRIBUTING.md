@@ -114,7 +114,7 @@ new scene should arrive as a pack rather than as an edit to `shader::SPECS`.
 
 ## Publishing
 
-The repository is private until the maintainer publishes it. Do not add a
-remote, a release, or an install URL. When it is public, the install line
-stays `./scripts/install.sh` from a checkout; a one-liner can wait until the
-URL is real.
+The public repository is https://github.com/iuri1911/asciiwall. Install from a
+checkout with `./scripts/install.sh`; do not promote a remote one-line installer
+that executes unreviewed code. The engine is MIT; the two PsyBear plates keep
+their separate CC BY-NC-SA 3.0 license (see `src/scenes/plates/README.md`).
